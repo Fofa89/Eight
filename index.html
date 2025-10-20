@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Painel de Rotação Cripto — ETH/BTC, Dominância, TVL, Líderes</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto; margin: 0; background: #0b0f18; color: #e6edf3; }
+    header { padding: 16px 24px; background: #0f1422; border-bottom: 1px solid #1f2937; }
+    h1 { font-size: 20px; margin: 0 0 6px; }
+    .sub { color: #94a3b8; font-size: 13px; }
+    main { padding: 16px 24px; display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    section { background: #0f1422; border: 1px solid #1f2937; border-radius: 8px; padding: 12px; }
+    h2 { font-size: 16px; margin: 0 0 10px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { border-bottom: 1px solid #1f2937; padding: 8px; text-align: left; }
+    th { color: #cbd5e1; background: #0b1220; position: sticky; top: 0; }
+    .up { color: #22c55e; }
+    .down { color: #ef4444; }
+    .muted { color: #94a3b8; }
+    .grid-1 { grid-column: span 2; }
+    .chip { display:inline-block; padding:2px 6px; border:1px solid #334155; border-radius:999px; margin-right:6px; font-size:12px; color:#cbd5e1;}
+    .row { display:flex; gap:8px; align-items:center; margin-bottom:8px; }
+    input, select { background:#0b1220; border:1px solid #334155; color:#e6edf3; padding:6px 8px; border-radius:6px; }
+    .small { font-size:12px; }
+    footer { padding: 10px 24px; color: #64748b; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Painel de Rotação Cripto</h1>
+    <div class="sub">ETH/BTC pós-queda do BTC • Dominância • TVL • Volume • Líderes por janela</div>
+  </header>
+
+  <main>
+    <section id="btc-eth" class="grid-1">
+      <h2>BTC e ETH/BTC (detecção de queda e recuperação)</h2>
+      <div class="row">
+        <label class="chip">Janela:</label>
+        <select id="window">
+          <option value="24h">24h</option>
+          <option value="48h">48h</option>
+          <option value="7d">7d</option>
+        </select>
+        <span class="muted small">Regra: queda de BTC na janela → verificar se ETH/BTC sobe na recuperação</span>
+      </div>
+      <div id="btcEthData" class="small"></div>
+    </section>
+
+    <section id="dominance">
+      <h2>Dominância do BTC</h2>
+      <div id="dominanceData" class="small"></div>
+    </section>
+
+    <section id="tvl">
+      <h2>On-chain: TVL por ecossistema/protocolo</h2>
+      <table>
+        <thead><tr><th>Ecossistema/Protocolo</th><th>TVL</th><th>Δ 24h</th><th>Δ 7d</th></tr></thead>
+        <tbody id="tvlTable"></tbody>
+      </table>
+      <div class="muted small">Fonte: DefiLlama</div>
+    </section>
+
+    <section id="leaders" class="grid-1">
+      <h2>Líderes por janela (ALTs superando BTC e ETH)</h2>
+      <div class="row">
+        <label class="chip">Janela:</label>
+        <select id="leadersWindow">
+          <option value="1h">1h</option>
+          <option value="24h" selected>24h</option>
+          <option value="7d">7d</option>
+        </select>
+        <label class="chip">Narrativa:</label>
+        <select id="narrative">
+          <option value="all" selected>Todas</option>
+          <option value="l1">L1</option>
+          <option value="l2">L2</option>
+          <option value="defi">DeFi</option>
+          <option value="ai">AI</option>
+          <option value="rwa">RWA</option>
+          <option value="meme">Memes</option>
+        </select>
+      </div>
+      <table>
+        <thead><tr><th>Token</th><th>Δ janela</th><th>Vs BTC</th><th>Vs ETH</th><th>Volume</th></tr></thead>
+        <tbody id="leadersTable"></tbody>
+      </table>
+      <div class="muted small">Fonte: CoinGecko</div>
+    </section>
+  </main>
+
+  <footer>
+    Painel MVP • APIs públicas (CoinGecko, DefiLlama) • Sem custos • Atualiza a cada 60s
+  </footer>
+
+<script>
+const COINGECKO = 'https://api.coingecko.com/api/v3';
+const DEFILLAMA = 'https://api.llama.fi';
+
+const tickers = {
+  btc: 'bitcoin',
+  eth: 'ethereum',
+  // Adicione aqui as alts principais que quer monitorar no MVP:
+  watchlist: ['solana', 'binancecoin', 'cardano', 'render-token', 'fetch-ai', 'optimism', 'arbitrum', 'ondo', 'dogecoin', 'shiba-inu', 'avalanche-2', 'aptos'],
+};
+
+// Util: formatação
+const fmt = new Intl.NumberFormat('pt-BR', { maximumFractionDigits: 2 });
+const money = v => 'US$ ' + new Intl.NumberFormat('en-US', { notation:'compact', maximumFractionDigits:2 }).format(v || 0);
+const percent = v => (v >= 0 ? `<span class="up">+${fmt.format(v)}%</span>` : `<span class="down">${fmt.format(v)}%</span>`);
+
+// 1) BTC e ETH/BTC
+async function loadBtcEth(windowSel) {
+  const market = await fetch(`${COINGECKO}/simple/price?ids=${tickers.btc},${tickers.eth}&vs_currencies=usd&include_24hr_change=true`).then(r=>r.json());
+  const btc24 = market[tickers.btc].usd_24h_change;
+  const eth24 = market[tickers.eth].usd_24h_change;
+
+  // ETH/BTC via preço relativo
+  const ethBtc = (market[tickers.eth].usd) / (market[tickers.btc].usd);
+
+  const el = document.getElementById('btcEthData');
+  el.innerHTML = `
+    <div>BTC Δ24h: ${percent(btc24)} | ETH Δ24h: ${percent(eth24)} | ETH/BTC agora: ${fmt.format(ethBtc)}</div>
+    <div class="muted">Sinal: se BTC caiu e ETH/BTC subir nas próximas leituras, confiança em ALTs ↑</div>
+  `;
+}
+
+// 2) Dominância BTC (approx): usar market caps globais do CoinGecko
+async function loadDominance() {
+  const global = await fetch(`${COINGECKO}/global`).then(r=>r.json());
+  const mc = global.data.total_market_cap.usd;
+  const btcDom = global.data.market_cap_percentage.btc;
+  const ethDom = global.data.market_cap_percentage.eth;
+
+  document.getElementById('dominanceData').innerHTML = `
+    <div>Dominância BTC: ${fmt.format(btcDom)}% • Dominância ETH: ${fmt.format(ethDom)}%</div>
+    <div>Market Cap Total: ${money(mc)}</div>
+    <div class="muted">Sinal: queda da dominância BTC após recuperação → rotação em ALTs</div>
+  `;
+}
+
+// 3) TVL DefiLlama (top protocolos e por cadeia)
+async function loadTVL() {
+  const chains = await fetch(`${DEFILLAMA}/chains`).then(r=>r.json());
+  const topChains = chains
+    .filter(c => ['Ethereum','Arbitrum','Optimism','Base','Solana','Avalanche','Sui','Aptos'].includes(c.name))
+    .sort((a,b)=>b.tvl - a.tvl)
+    .slice(0,12);
+
+  const tbody = document.getElementById('tvlTable');
+  tbody.innerHTML = topChains.map(c => `
+    <tr>
+      <td>${c.name}</td>
+      <td>${money(c.tvl)}</td>
+      <td>${percent(c.change_1d || 0)}</td>
+      <td>${percent(c.change_7d || 0)}</td>
+    </tr>
+  `).join('');
+}
+
+// 4) Líderes por janela: comparar Δ com BTC e ETH
+async function loadLeaders(windowKey) {
+  const vsCurrency = 'usd';
+  const ids = [tickers.btc, tickers.eth, ...tickers.watchlist].join(',');
+  const url = `${COINGECKO}/coins/markets?vs_currency=${vsCurrency}&ids=${ids}&price_change_percentage=1h,24h,7d`;
+  const data = await fetch(url).then(r=>r.json());
+
+  const btc = data.find(d => d.id === tickers.btc);
+  const eth = data.find(d => d.id === tickers.eth);
+
+  const changeKey = windowKey === '1h' ? 'price_change_percentage_1h_in_currency'
+                    : windowKey === '7d' ? 'price_change_percentage_7d_in_currency'
+                    : 'price_change_percentage_24h_in_currency';
+
+  const leaders = data
+    .filter(d => d.id !== tickers.btc && d.id !== tickers.eth)
+    .map(d => ({
+      name: d.name,
+      symbol: d.symbol.toUpperCase(),
+      change: d[changeKey],
+      vsBTC: d[changeKey] - btc[changeKey],
+      vsETH: d[changeKey] - eth[changeKey],
+      volume: d.total_volume
+    }))
+    .sort((a,b) => b.change - a.change)
+    .slice(0, 20);
+
+  const tbody = document.getElementById('leadersTable');
+  tbody.innerHTML = leaders.map(l => `
+    <tr>
+      <td>${l.name} (${l.symbol})</td>
+      <td>${percent(l.change || 0)}</td>
+      <td>${percent(l.vsBTC || 0)}</td>
+      <td>${percent(l.vsETH || 0)}</td>
+      <td>${money(l.volume || 0)}</td>
+    </tr>
+  `).join('');
+}
+
+// Filtros por narrativa (MVP simples: filtra por lista estática)
+function applyNarrativeFilter(narr) {
+  const map = {
+    l1: ['solana','avalanche-2','aptos'],
+    l2: ['optimism','arbitrum'],
+    defi: [], // você pode popular com AAVE, UNI, etc.
+    ai: ['render-token','fetch-ai'],
+    rwa: ['ondo'],
+    meme: ['dogecoin','shiba-inu']
+  };
+  if (narr === 'all') return tickers.watchlist;
+  const ids = map[narr] || [];
+  return ids.length ? ids : tickers.watchlist;
+}
+
+// Atualização periódica
+async function refresh() {
+  const windowSel = document.getElementById('window').value;
+  const leadersWindow = document.getElementById('leadersWindow').value;
+  const narrativeSel = document.getElementById('narrative').value;
+
+  await loadBtcEth(windowSel);
+  await loadDominance();
+  await loadTVL();
+
+  // Ajusta watchlist conforme narrativa
+  tickers.watchlist = applyNarrativeFilter(narrativeSel);
+  await loadLeaders(leadersWindow);
+}
+
+document.getElementById('window').addEventListener('change', refresh);
+document.getElementById('leadersWindow').addEventListener('change', refresh);
+document.getElementById('narrative').addEventListener('change', refresh);
+
+refresh();
+setInterval(refresh, 60000);
+</script>
+</body>
+</html>
